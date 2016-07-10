@@ -1,0 +1,43 @@
+# List of bcbio programs used in the tumor-amplicon pipeline
+# Samples are split by chromosome
+
+# Fastq manipulation
+gunzip -c copies fastqs to work directory
+grabix fastqs
+
+# Fastq alignment and indexing
+bwa mem fastqs and add read groups to sam files | sambamba/samtools sort sams into bams
+sambamba/samtools index bams
+
+# Bed file manipulation
+cat bedfile | pbgzip/bgzip > bedfile.gz
+tabix -f -p bed bedfile.gz
+bedtools merge -i bedfile > bedfile-merged
+
+# Get mapping quality for each bam
+sambamba view -F 'mapping_quality > 0' -L sampleid/i_date_runid-sort-callable-split/i_date_runid-sort-n-callable-regions.bed -f bam -l 1 sampleid/i_date_runid-sort.bam | bedtools genomecov -split -ibam stdin -bga -g GRCh37.fa.fai > sampleid/i_date_runid-sort-callable-split/i_date_runid-sort-n-callable-genomecov.bed
+
+# Remove regions not specified in bed file
+cat sampleid/i_date_runid-sort-callable-split/i_date_runid-sort-n-callable-genomecov.bed | awk '{if {$4 == 0} {print $0"\tNO_COVERAGE"} else if ($4 < 4) {print $0"\tLOW_COVERAGE"} else {print $0"\tCALLABLE"} }' | bedtools groupby -prec 21 -g 1,5 -c 1,2,3,5 -o first,first,max,first | cut -f 3-6 | bedtools intersect -nonamecheck -a - -b sampleid/i_date_runid-sort-callable-split/i_date_runid-sort-n-callable.bed > sampleid/i_date_runid-sort-callable-split/i_date_runid-sort-n-callable.bed
+
+# Vardict variant calling
+vardict-java GRCh37.fa -f 0.01 sampleid-sort.bam -c 1 -S 2 -E 3 -g 4 -Q 10 sampleid-unmerged-regions-regionlimit.bed | teststrandbias.R var2vcf_valid.pl -N {print}' | awk -F$'\t' -v OFS='\t' '$1!~/^#/ && $4 == $5 {next} {print}' | vcfstreamsort | bgzip -c {print}' | awk -F$'\t' -v  OFS='\t' '$1!~/^#/ && $4 == $5 {next} {print}' | vcfstreamsort | bgzip -c > sampleid.raw.vcf.gz
+tabix -f -p vcf sampleid-raw.vcf.gz
+bcftools annotate -c ID -a dbsnp_138.vcf.gz -o sampleid-raw-wdbsnp.vcf.gz -O z sampleid-raw.vcf.gz
+
+## Freebayes/GATK
+
+# snpEff
+snpEff -Djava.io.tmpdir=.../tmp eff -dataDir GRCh37/snpEff -formatEff -classic -cancer -noLog -i vcf -o vcf -s sampleid-effects-stats.html GRCh37.75 sampleid.vcf.gz | pbgzip -n 2 -c > sampleid-effects.vcf.gz
+tabix -f -p vcf sampleid-effects.vcf.gz
+cat sampleid-effects-ploidyfix.vcf | pbgzip -n 2 -c > sampleid-effects-ploidyfix.vcf.gz
+tabix -f -p vcf sampleid-effects-ploidyfix.vcf.gz
+cat sampleid-effects-ploidyfix-germline.vcf | pbgzip -n 2 -c > sampleid-effects-ploidyfix-germline.vcf.gz
+tabix -f -p vcf sampleid-effects-ploidyfix-germline.vcf.gz
+
+# bamtools stats
+bamtools stats -in sampleid/i_date_runid-sort.bam -insert > sampleid/bamtools_stats.txt
+bcftools stats -f PASS sampleid-effects-ploidyfix.vcf.gz > sampleid-effects-ploidyfix-bcfstats.tsv
+
+# Rscript qc-coverage-report-run.R
+# END
